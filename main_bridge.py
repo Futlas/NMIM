@@ -11,7 +11,7 @@ from chaos_engine import KigaiChaosEngine
 # Импортируем модули нашего изолированного ядра NMIM
 from chemistry_pool import KigaiChemistryPool
 from sensor_cortex import KigaiSensorCortex
-from virtual_neuron import VirtualBioNeuron
+from virtual_neuron import KigaiPopulationLayer
 
 # Принудительно заводим uvloop под CachyOS
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
@@ -34,7 +34,8 @@ def load_genes() -> dict:
         "dopamine_burn": -0.03,
         "adrenaline_serotonin": 0.85,
         "best_fitness": -999.0,
-        "generation": 0
+        "generation": 0,
+        "repulsion_base": 0.02
     }
 
 def save_genes(genes: dict):
@@ -51,6 +52,8 @@ def mutate_genes(base_genes: dict) -> dict:
     scale = 0.15
     
     # Мутируем гены в жестких биологических границах
+    current_repulsion = base_genes.get("repulsion_base", 0.02)
+    mutated["repulsion_base"] = np.clip(current_repulsion + random.uniform(-0.01, 0.01), 0.005, 0.05)
     mutated["cortisol_shock"] = np.clip(base_genes["cortisol_shock"] + random.uniform(-scale, scale), 0.01, 0.4)
     mutated["dopamine_burn"] = np.clip(base_genes["dopamine_burn"] + random.uniform(-scale, scale), -0.15, -0.005)
     mutated["adrenaline_serotonin"] = np.clip(base_genes["adrenaline_serotonin"] + random.uniform(-scale, scale), 0.3, 1.0)
@@ -70,7 +73,7 @@ async def run_testing_epoch(genes: dict, cortex: KigaiSensorCortex):
     for session in range(1, 11):
         chemistry = KigaiChemistryPool()
         chaos = KigaiChaosEngine()
-        neuron = VirtualBioNeuron()
+        neuron = KigaiPopulationLayer()
         
         # Подгружаем сохраненную синаптическую память Хебба прошлых поколений
         if os.path.exists(WEIGHTS_PATH):
@@ -96,12 +99,14 @@ async def run_testing_epoch(genes: dict, cortex: KigaiSensorCortex):
                 text_signal = "HEARTBEAT_STABLE"
                 current_prediction_error = prediction_error
 
-            # Превращаем ASCII в пространственную волну
             wave_vector = cortex.text_to_wave_vector(text_signal)
-            raw_sensory_input = np.clip(float(np.mean(wave_vector)) * 1.6, 0.0, 1.0)
-            
+            # Гарантируем, что вектор имеет длину 64 за O(1) через pad
+            raw_sensory_input = np.pad(wave_vector, (0, max(0, 64 - len(wave_vector))), 'constant')[:64]
+            raw_sensory_input = np.clip(raw_sensory_input * 1.6, 0.0, 1.0)
+
             chemistry.update_metabolism(current_prediction_error)
-            
+            neuron.update_spatial_topology(repulsion_base=genes.get("repulsion_base", 0.02))
+
             # ГЕН 1: Аварийный адреналиновый форсаж серотонина
             if chemistry.cortisol >= 0.85:
                 chemistry.modify_hormone(chemistry.IDX_SEROTONIN, genes["adrenaline_serotonin"])
@@ -110,51 +115,56 @@ async def run_testing_epoch(genes: dict, cortex: KigaiSensorCortex):
             if chemistry.serotonin >= 0.90 and chemistry.cortisol <= (chemistry.serotonin / 2):
                 chemistry.modify_hormone(chemistry.IDX_SEROTONIN, -0.10)
                 
-            # Синапс считает волновой выход (Active Inference)
-            output_action_probability = neuron.process_signal(raw_sensory_input, chemistry, chaos)
-            dynamic_threshold = 0.6 - (chemistry.serotonin * 0.15)
             
-            if output_action_probability > dynamic_threshold:
-                # Поиск слова в словаре памяти по минимальному евклидову расстоянию до mu
-                best_word = neuron_memory
-                min_dist = 999.0
-                for word in neuron_memory:
-                    word_density = float(np.mean(cortex.text_to_wave_vector(word)))
-                    dist = abs(word_density - neuron.mu)
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_word = word
-                
+                        # --- ОБРАБОТКА ПОПУЛЯЦИЕЙ ---
+            # Передаем полный 64-канальный вектор в нашу универсальную кору
+            population_state = neuron.process_population_signal(raw_sensory_input, chemistry, chaos)
+            
+            # Физическое движение графа коры на каждом такте
+            neuron.update_spatial_topology(repulsion_base=genes.get("repulsion_base", 0.02))
+            
+            # Динамический порог принятия решений (сужается серотонином)
+            dynamic_threshold = 0.6 - (chemistry.serotonin * 0.15)
+            mean_activation = float(np.mean(population_state))
+            
+            if mean_activation > dynamic_threshold:
+                # МАТРИЧНЫЙ МОТОРНЫЙ АКТ (Active Inference)
                 total_actions += 1
+                
+                # За один проход (без циклов for) находим самое близкое слово из памяти
+                # Превращаем слова памяти в матрицу эмбеддингов (это O(1) относительно такта)
+                memory_matrices = np.array([
+                    np.pad(cortex.text_to_wave_vector(w), (0, max(0, 64 - len(cortex.text_to_wave_vector(w)))), 'constant')[:64]
+                    for w in neuron_memory
+                ])
+                
+                # Считаем Евклидово расстояние от входа до всей памяти разом
+                distances = np.linalg.norm(memory_matrices - raw_sensory_input, axis=1)
+                best_word_idx = np.argmin(distances)
+                best_word = neuron_memory[best_word_idx]
+                
+                # Логика проверки ответа (правила игры в города)
                 target_letter = last_env_word[-1].lower()
                 if target_letter in ['ь', 'ъ', 'ы']:
                     target_letter = last_env_word[-2].lower()
                     
-                chosen_word_density = float(np.mean(cortex.text_to_wave_vector(best_word)))
-                
                 if best_word.lower().startswith(target_letter):
-                    # ПРАВИЛЬНЫЙ ОТВЕТ -> Резонанс Хебба
+                    # УСПЕХ -> Резонанс Хебба
                     prediction_error = max(0.0, current_prediction_error - 0.5)
                     chemistry.modify_hormone(chemistry.IDX_DOPAMINE, 0.30)
                     chemistry.modify_hormone(chemistry.IDX_SEROTONIN, 0.20)
-                    neuron.mu = 0.8 * neuron.mu + 0.2 * chosen_word_density
                 else:
-                    # НЕПРАВИЛЬНЫЙ ОТВЕТ -> Пластичность отчаяния
+                    # ОШИБКА -> Кортизоловый шок
                     prediction_error = min(1.0, current_prediction_error + 0.3)
                     chemistry.modify_hormone(chemistry.IDX_CORTISOL, 0.25)
                     chemistry.modify_hormone(chemistry.IDX_DOPAMINE, -0.10)
-                    if neuron.mu > chosen_word_density:
-                        neuron.mu = min(1.0, neuron.mu + 0.25 * chemistry.cortisol)
-                    else:
-                        neuron.mu = max(0.0, neuron.mu - 0.25 * chemistry.cortisol)
             else:
+                # ПАССИВНОЕ НАБЛЮДЕНИЕ (Обдумывание)
                 prediction_error = current_prediction_error
-                # ГЕНЫ 2 и 3: Накопительные штрафы за бездействие и обдумывание в else
                 chemistry.modify_hormone(chemistry.IDX_CORTISOL, genes["cortisol_shock"])
                 chemistry.modify_hormone(chemistry.IDX_DOPAMINE, genes["dopamine_burn"])
 
-            total_cortisol_accumulation += chemistry.cortisol
-            
+
         # На 100-м такте сессии жестко пишем веса Хебба на диск перед дропом гомеостаза
         try:
             with open(WEIGHTS_PATH, "w", encoding="utf-8") as f:  # noqa: ASYNC230
@@ -165,7 +175,10 @@ async def run_testing_epoch(genes: dict, cortex: KigaiSensorCortex):
     # Вычисляем коэффициент выживаемости (Fitness Score) за эпоху
     mean_cortisol = total_cortisol_accumulation / total_ticks
     fitness = float(total_actions) - (mean_cortisol * 10.0)
-    
+    mean_spatial_dist = np.mean(neuron.D)
+        # Если нейроны схлопнулись в точку (<0.15) или разлетелись врассыпную (>0.8) — жестко режем фитнес
+    if mean_spatial_dist < 0.15 or mean_spatial_dist > 0.8: 
+            fitness -= 300.0
     return fitness, total_actions, mean_cortisol
 
 async def main_evolution_loop():
