@@ -1,34 +1,56 @@
 import numpy as np
 
-
 class KigaiSensorCortex:
-
     """
     Сенсорная кора ядра KIGAI.
-    Парсит текстовые сигналы среды и транслирует их в гладкие 
-    пространственные векторы волновых амплитуд [0.0, 1.0] для cl-sdk.
+    Динамически нарезает текст на слоги с адаптивным хаос-окном,
+    зависящим от стресса (кортизола), и транслирует их в гладкие
+    пространственные волны для 64 каналов cl-sdk.
     """
 
-    def __init__(self,channels_count: int = 64):
-
+    def __init__(self, channels_count: int = 64):
         self.channels_count = channels_count
-    def text_to_wave_vector(self,text: str) -> np.ndarray:
-        """
-        Преобразует строку текста в монолитный вектор амплитуд вероятностей.
-        Чистая интерполяция пространственного буфера.
-        """
+   
+        np.random.seed(42)
+        self.W_in = np.random.uniform(0.1, 0.9, (1105, self.channels_count))
+        self.previous_wave = np.zeros(self.channels_count, dtype=np.float64)
+        self.sillywindow = 0
 
+    def step_tokenize(self, text: str, cortisol: float, chaos_engine) -> np.ndarray: 
+        """
+        За один такт вырезает адаптивный слог из текста на основе уровня стресса
+        и переданного живого объекта KigaiChaosEngine.
+        """
         if not text:
-            return np.zeros(self.channels_count,dtype=np.float64)
-
-        raw_ascii = np.array([ord(char) for char in text],dtype=np.float64)
-        normalized_wave = (raw_ascii % 32) / 32.0
-
-        x_old = np.linspace(0,1,len(normalized_wave))
-        x_new = np.linspace(0,1,self.channels_count)
-
-        spartial_pattern = np.interp(x_new,x_old,normalized_wave)
-
-        return np.clip(spartial_pattern,0.0,1.0)
-
+            return np.zeros(self.channels_count, dtype=np.float64)
         
+        if self.sillywindow >= len(text):
+            self.sillywindow = 0
+            self.previous_wave = np.zeros(self.channels_count, dtype=np.float64)
+        
+        base_window = 2
+        if cortisol > 0.3:
+            # Вызываем метод напрямую у ПЕРЕДАННОГО через аргументы живого объекта движка
+            quantum_sample = chaos_engine.generate_quantum_noise()
+            
+            jit = int(np.round((quantum_sample - 0.5) * 4 * cortisol))
+            window_size = int(np.clip(base_window + jit, 1, 4))
+        else:
+            window_size = base_window
+
+        chunk = text[self.sillywindow : self.sillywindow + window_size]
+        self.sillywindow += len(chunk)
+
+        char_indices = np.array([min(ord(char), 1104) for char in chunk], dtype=np.int32)
+
+        current_wave = np.zeros(self.channels_count, dtype=np.float64)
+        for pos, idx in enumerate(char_indices):
+            position_weight = 1.0 / (pos + 1)
+            current_wave += self.W_in[idx] * position_weight
+
+        final_wave = current_wave + self.previous_wave * 0.3
+        final_wave = np.clip(final_wave, 0.0, 1.0)
+
+        self.previous_wave = final_wave.copy()
+
+        return final_wave

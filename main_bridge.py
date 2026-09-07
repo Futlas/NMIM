@@ -66,8 +66,12 @@ async def run_testing_epoch(genes: dict, cortex: KigaiSensorCortex):
     total_cortisol_accumulation = 0.0
     total_ticks = 0
     
-    env_dictionary = ["Москва", "Архангельск", "Астрахань", "Новгород", "Донецк", "Казань"]
-    neuron_memory = ["Астрахань", "Новгород", "Донецк", "Казань", "Моршанск", "Владивосток"]
+    # Наш тренировочный пул предложений для проверки инвариантности смысла
+    env_sentences = [
+        "Паша ищет дзен",
+        "Ищет Паша дзен",
+        "Дзен ищет Паша"
+    ]
     
     # ВНЕШНИЙ ЦИКЛ: 10 сессий для чистой накопленной статистики выживания
     for session in range(1, 11):
@@ -83,25 +87,31 @@ async def run_testing_epoch(genes: dict, cortex: KigaiSensorCortex):
             except Exception:  # noqa: BLE001, S110
                 pass
 
+        # Инициализируем статическую матрицу памяти предложений ОДИН раз за сессию.
+        # Чтобы не сбивать sillywindow живого кортекса, генерируем её через независимый чистый запуск
+        temp_cortex = KigaiSensorCortex(channels_count=cortex.channels_count)
+        memory_matrices = np.array([
+            temp_cortex.step_tokenize(s, 0.0, chaos)
+            for s in env_sentences
+        ])
+
         prediction_error = 0.0
-        last_env_word = ""
+        current_sentence = random.choice(env_sentences)
         
         # ВНУТРЕННИЙ ЦИКЛ: Ровно 100 тактов Closed-Loop гомеостаза
         for tick_count in range(1, 101):
             total_ticks += 1
             
-            # Ход среды каждые 5 тактов
-            if tick_count % 5 == 0 or last_env_word == "":
-                text_signal = random.choice(env_dictionary)
-                last_env_word = text_signal
+            # Если токенизатор дочитал предложение до конца (sillywindow сбросился в 0),
+            # или это самый первый такт — выбираем новое случайное предложение-инверсию
+            if cortex.sillywindow == 0 or tick_count == 1:
+                current_sentence = random.choice(env_sentences)
                 current_prediction_error = 0.5
             else:
-                text_signal = "HEARTBEAT_STABLE"
                 current_prediction_error = prediction_error
 
-            wave_vector = cortex.text_to_wave_vector(text_signal)
-            # Гарантируем, что вектор имеет длину 64 за O(1) через pad
-            raw_sensory_input = np.pad(wave_vector, (0, max(0, 64 - len(wave_vector))), 'constant')[:64]
+            # Нарезаем текущее предложение на адаптивные слоги
+            raw_sensory_input = cortex.step_tokenize(current_sentence, chemistry.cortisol, chaos)
             raw_sensory_input = np.clip(raw_sensory_input * 1.6, 0.0, 1.0)
 
             chemistry.update_metabolism(current_prediction_error)
@@ -115,9 +125,7 @@ async def run_testing_epoch(genes: dict, cortex: KigaiSensorCortex):
             if chemistry.serotonin >= 0.90 and chemistry.cortisol <= (chemistry.serotonin / 2):
                 chemistry.modify_hormone(chemistry.IDX_SEROTONIN, -0.10)
                 
-            
-                        # --- ОБРАБОТКА ПОПУЛЯЦИЕЙ ---
-            # Передаем полный 64-канальный вектор в нашу универсальную кору
+            # --- ОБРАБОТКА ПОПУЛЯЦИЕЙ ---
             population_state = neuron.process_population_signal(raw_sensory_input, chemistry, chaos)
             
             # Физическое движение графа коры на каждом такте
@@ -130,26 +138,15 @@ async def run_testing_epoch(genes: dict, cortex: KigaiSensorCortex):
             if mean_activation > dynamic_threshold:
                 # МАТРИЧНЫЙ МОТОРНЫЙ АКТ (Active Inference)
                 total_actions += 1
-                
-                # За один проход (без циклов for) находим самое близкое слово из памяти
-                # Превращаем слова памяти в матрицу эмбеддингов (это O(1) относительно такта)
-                memory_matrices = np.array([
-                    np.pad(cortex.text_to_wave_vector(w), (0, max(0, 64 - len(cortex.text_to_wave_vector(w)))), 'constant')[:64]
-                    for w in neuron_memory
-                ])
-                
-                # Считаем Евклидово расстояние от входа до всей памяти разом
+
+                # Евклидово расстояние от текущего слогового спайка до паттернов предложений
                 distances = np.linalg.norm(memory_matrices - raw_sensory_input, axis=1)
-                best_word_idx = np.argmin(distances)
-                best_word = neuron_memory[best_word_idx]
+                best_sentence_idx = np.argmin(distances)
+                predicted_sentence = env_sentences[best_sentence_idx]
                 
-                # Логика проверки ответа (правила игры в города)
-                target_letter = last_env_word[-1].lower()
-                if target_letter in ['ь', 'ъ', 'ы']:
-                    target_letter = last_env_word[-2].lower()
-                    
-                if best_word.lower().startswith(target_letter):
-                    # УСПЕХ -> Резонанс Хебба
+                # Если модель по текущему слогу смогла правильно распознать, 
+                # какое именно предложение сейчас читается — это УСПЕХ
+                if predicted_sentence == current_sentence:
                     prediction_error = max(0.0, current_prediction_error - 0.5)
                     chemistry.modify_hormone(chemistry.IDX_DOPAMINE, 0.30)
                     chemistry.modify_hormone(chemistry.IDX_SEROTONIN, 0.20)
@@ -164,6 +161,7 @@ async def run_testing_epoch(genes: dict, cortex: KigaiSensorCortex):
                 chemistry.modify_hormone(chemistry.IDX_CORTISOL, genes["cortisol_shock"])
                 chemistry.modify_hormone(chemistry.IDX_DOPAMINE, genes["dopamine_burn"])
 
+            total_cortisol_accumulation += chemistry.cortisol
 
         # На 100-м такте сессии жестко пишем веса Хебба на диск перед дропом гомеостаза
         try:
@@ -171,15 +169,21 @@ async def run_testing_epoch(genes: dict, cortex: KigaiSensorCortex):
                 json.dump({"neuron": neuron.export_weights()}, f, indent=4)
         except Exception:  # noqa: BLE001, S110
             pass
-            
-    # Вычисляем коэффициент выживаемости (Fitness Score) за эпоху
+
+    # --- ТВОЙ ОРИГИНАЛЬНЫЙ ФИНАЛ И КРИТЕРИЙ ВЫЖИВАНИЯ ---
+    # Вычисляем коэффициент выживаемости (Fitness Score) за всю эпоху
     mean_cortisol = total_cortisol_accumulation / total_ticks
     fitness = float(total_actions) - (mean_cortisol * 10.0)
+    
+    # Считаем среднее пространственное расстояние между нейронами последнего поколения
     mean_spatial_dist = np.mean(neuron.D)
-        # Если нейроны схлопнулись в точку (<0.15) или разлетелись врассыпную (>0.8) — жестко режем фитнес
+    
+    # Если нейроны схлопнулись в точку (<0.15) или разлетелись врассыпную (>0.8) — жестко штрафуем фитнес
     if mean_spatial_dist < 0.15 or mean_spatial_dist > 0.8: 
-            fitness -= 300.0
+        fitness -= 300.0
+        
     return fitness, total_actions, mean_cortisol
+
 
 async def main_evolution_loop():
     print("="*60)
