@@ -3,7 +3,7 @@ import time
 import numpy as np
 
 
-class KigaiChaosEngine:
+class ChaosEngine:
     """
     Движок квантового детерминированного хаоса.
     Генерирует энтропию на базе наносекундного джиттера системного таймера железа.
