@@ -1,7 +1,7 @@
 import numpy as np
 
 
-class KigaiChemistryPool:
+class ChemistryPool:
     """
     Модуль низкоуровневого метаболизма.
     Выделяет монолитный плоский массив на 128 ячеек float64 для L1-Cache локализации.
