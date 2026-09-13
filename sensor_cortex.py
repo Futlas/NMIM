@@ -5,9 +5,9 @@ import random
 import numpy as np
 
 
-class KigaiSensorCortex:
+class SensorCortex:
     """
-    Обновленная сенсорная кора ядра KIGAI.
+    Обновленная сенсорная кора.
     Нарезает текст на слоги с жестким порогом джиттера (>0.5),
     выделяет под каждый слог случайные 8 нейронов-адресатов
     и управляет их внутренними кубитными синапсами 8x8 через JSON.
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     fake_coordinates = np.random.uniform(-10.0, 10.0, (100, 2))
     
     # Создаем кору с привязкой к evo_genes.json
-    cortex = KigaiSensorCortex(total_neurons=100, Weights_path="evo_genes.json")
+    cortex = SensorCortex(total_neurons=100, Weights_path="evo_genes.json")
     
     test_text = "ПАША ПАША"
     print(f"Входной текст: '{test_text}'")

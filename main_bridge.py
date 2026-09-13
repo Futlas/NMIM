@@ -6,18 +6,18 @@ import random
 import numpy as np
 import uvloop
 
-from chaos_engine import KigaiChaosEngine
+from chaos_engine import ChaosEngine
 
 # Импортируем модули нашего изолированного ядра NMIM
-from chemistry_pool import KigaiChemistryPool
-from sensor_cortex import KigaiSensorCortex
-from virtual_neuron import KigaiPopulationLayer
+from chemistry_pool import ChemistryPool
+from sensor_cortex import SensorCortex
+from virtual_neuron import PopulationLayer
 
 # Принудительно заводим uvloop под CachyOS
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
 # Статические пути к памяти гомеостаза на SSD
-WEIGHTS_PATH = "kigai_weights.json"
+WEIGHTS_PATH = "weights.json"
 EVO_PATH = "evo_genes.json"
 
 def load_genes() -> dict:
@@ -60,7 +60,7 @@ def mutate_genes(base_genes: dict) -> dict:
     mutated["generation"] += 1
     return mutated
 
-async def run_testing_epoch(genes: dict, cortex: KigaiSensorCortex):
+async def run_testing_epoch(genes: dict, cortex: SensorCortex):
     """Прогоняет жесткий тест: 10 изолированных сессий по 100 тактов."""
     total_actions = 0
     total_cortisol_accumulation = 0.0
@@ -75,9 +75,9 @@ async def run_testing_epoch(genes: dict, cortex: KigaiSensorCortex):
     
     # ВНЕШНИЙ ЦИКЛ: 10 сессий для чистой накопленной статистики выживания
     for session in range(1, 11):
-        chemistry = KigaiChemistryPool()
-        chaos = KigaiChaosEngine()
-        neuron = KigaiPopulationLayer()
+        chemistry = ChemistryPool()
+        chaos = ChaosEngine()
+        neuron = PopulationLayer()
         
         # Подгружаем сохраненную синаптическую память Хебба прошлых поколений
         if os.path.exists(WEIGHTS_PATH):
@@ -89,7 +89,7 @@ async def run_testing_epoch(genes: dict, cortex: KigaiSensorCortex):
 
         # Инициализируем статическую матрицу памяти предложений ОДИН раз за сессию.
         # Чтобы не сбивать sillywindow живого кортекса, генерируем её через независимый чистый запуск
-        temp_cortex = KigaiSensorCortex(channels_count=cortex.channels_count)
+        temp_cortex = SensorCortex(channels_count=cortex.channels_count)
         memory_matrices = np.array([
             temp_cortex.step_tokenize(s, 0.0, chaos)
             for s in env_sentences
@@ -190,7 +190,7 @@ async def main_evolution_loop():
     print(" ЗАПУСК ЭВОЛЮЦИОННОГО ПОЛИГОНА НМИМ (v0.2-EVO)")
     print("="*60)
     
-    cortex = KigaiSensorCortex(channels_count=64)
+    cortex = SensorCortex(channels_count=64)
     current_genes = load_genes()
     
     print(f"[ЭВОЛЮЦИЯ] Старт с поколения: ГЕН-{current_genes['generation']}")
